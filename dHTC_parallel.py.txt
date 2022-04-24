@@ -1,0 +1,631 @@
+#!/usr/bin/env python3
+
+from rdkit.Chem import PandasTools
+import pandas as pd
+import os
+from rdkit import RDConfig
+import pickle
+import re 
+import time
+import numpy as np
+from molvs import Standardizer
+from concurrent import futures
+
+import sys
+import argparse  
+from rdkit import Chem
+from rdkit.Chem import AllChem
+from rdkit.Chem.Descriptors import MolWt, HeavyAtomCount
+import operator
+
+import mysql.connector
+from mysql.connector import errorcode
+from sklearn import preprocessing
+import json
+import argparse
+from pathlib import Path
+from multiprocessing import Pool
+# from dHTC_fragmentation import react
+# from dHTC_DBcalls import getbuildingblocks
+
+
+
+config = {
+    'user': 'sp459402',
+    'password': 'B3tab1es',
+    'host': 'uk1salx00547',
+    'database': 'building_blocks',
+    'raise_on_warnings': True, 
+}
+
+link = mysql.connector.connect(**config)
+# cnx= mysql.connector.connect(**config)
+
+
+# Functions to do reactions
+
+sys.path.insert(0,os.path.dirname(os.path.realpath(os.path.abspath(__file__))))
+file = sys.path[0]+"/"+"reaction.json"
+
+with open(file) as f:
+    dat = json.load(f)
+
+
+reactions = []
+protections = []
+for item in dat:
+    if(len(item) == 3):
+        name = item["Name"]
+        reaction = []
+        rxn_prior = []
+        for react in item["Reaction"]:
+            reaction.append(AllChem.ReactionFromSmarts(react))
+        rxn_prior = item["Rxn_Priority"]
+        reactions.append((name,reaction,rxn_prior))
+    if(len(item) == 4):
+        name = item["Name"]
+        reaction = []
+        for react in item["Reaction"]:
+            reaction.append(AllChem.ReactionFromSmarts(react))
+        protection = []
+        for reactant in item["Reactant"]:
+            protection.append(Chem.MolFromSmiles(reactant))
+        protections.append((name,reaction,protection)) 
+        
+class react:
+    def __init__(self,smiles):
+        self.smiles = smiles
+        self.mol = Chem.MolFromSmiles(smiles)
+    def do_reaction(self, reactions, protections = False):
+#         print("protection = {}".format(protections))
+        for x in reactions:
+            try:
+                for i in range (0,len(x[1])):
+                    reaction = x[1][i]
+                    if(protections == False):
+                        rxn_prior = x[2]
+                        try:
+                            ps = reaction.RunReactants((self.mol,))
+                        except:
+                            None
+                    else:
+                        protection = x[2][i]
+                        ps = reaction.RunReactants((protection,self.mol))
+                    for y in ps:
+                        if(protections == False):
+                            frag_1 = Chem.MolToSmiles(y[0])
+                            frag_2 = Chem.MolToSmiles(y[1])
+                            ii = len(re.findall('[a-zA-Z\d\(\)\=\[\]]',Chem.MolToSmiles(y[0]))) + Chem.Descriptors.ExactMolWt(Chem.MolFromSmiles(frag_1))
+                            jj = len(re.findall('[a-zA-Z\d\(\)\=\[\]]',Chem.MolToSmiles(y[1]))) + Chem.Descriptors.ExactMolWt(Chem.MolFromSmiles(frag_2))
+                            if(ii > jj):
+                                yield "{}.{},{},{},{}".format(frag_1,frag_2,x[0],i,rxn_prior)
+                            else:
+                                yield "{}.{},{},{},{}".format(frag_2,frag_1,x[0],i,rxn_prior)
+                        else:
+                            yield "{},{},{}".format(Chem.MolToSmiles(y[0]),x[0],i)
+            except:
+                None
+#                 print("Smiles = {}, Failed_Reaction = {}".format(self.smiles,x))
+
+    def orderfragments(self,frags):
+        smiles_all = frags.split(".")
+        d = {}
+        for i in range (0,len(smiles_all)):
+            d[i] = len(re.findall('[a-zA-Z\d\(\)\=\[\]]',smiles_all[i])) + Chem.Descriptors.ExactMolWt(Chem.MolFromSmiles(smiles_all[i]))
+        sorted_d = dict(sorted(d.items(), key=operator.itemgetter(1),reverse=True))
+        listall = list(sorted_d.keys())
+        if(len(smiles_all)==2):
+            return "{}.{}".format(smiles_all[listall[0]],smiles_all[listall[1]])
+        elif (len(smiles_all)==3):
+            return "{}.{}.{}".format(smiles_all[listall[0]],smiles_all[listall[1]],smiles_all[listall[2]])
+        
+    def all_cuts(self):
+        incl = []
+        smiles_list = []
+        for x in self.do_reaction(reactions):
+            if (x not in incl):
+                incl.append(x)
+                yield x
+                smiles = x.split(",")[0].split(".")
+                reaction = x.split(",")[1]
+                rank_reaction = x.split(",")[2]
+                rxn_prior = x.split(",")[3]
+                for ii in range(0,2):     # hardcoding for double cut
+                    obj = self.__class__(smiles[ii])  # Calling the Class from within the class
+                    for y in obj.do_reaction(reactions):
+                        smiles_1 = y.split(",")[0]
+                        reaction_1 = y.split(",")[1]
+                        rank_reaction_1 = y.split(",")[2]
+                        rxn_prior_1 = y.split(",")[3]
+                        if(ii==0):
+                            smiles_str = "{}.{}".format(smiles_1,smiles[1])
+                            new_smiles = self.orderfragments(smiles_str)
+                            if(new_smiles not in smiles_list):
+                                str1 = "{},{},{},{},{},{},{} ".format(new_smiles, reaction, reaction_1,rank_reaction,rank_reaction_1,rxn_prior,rxn_prior_1)
+                                smiles_list.append(new_smiles)
+                                yield str1
+                        if(ii==1):
+                            smiles_str = "{}.{}".format(smiles_1,smiles[0])
+                            new_smiles = self.orderfragments(smiles_str)
+                            if(new_smiles not in smiles_list):
+                                str1 = "{},{},{},{},{},{},{} ".format(new_smiles, reaction, reaction_1,rank_reaction,rank_reaction_1,rxn_prior,rxn_prior_1)
+                                smiles_list.append(new_smiles)
+                                yield str1    
+    def __str__(self):
+        return "The smiles is {}".format(smiles)
+
+
+
+# Functions to do Database calls
+
+def protect_groups(mol):
+    try:
+        smi = Chem.MolToSmiles(mol)
+        protect = False
+        prot = react(smi)   # Instantiating an object of class react
+        x_list = []
+        for x in prot.do_reaction(protections,True):
+            x_list.append(x)
+        if(len(x_list)> 0):
+            protect = True
+        for x in set(x_list):
+            x_ = x.split(",")            
+            if(len(re.findall('[At]',x_[0]))>0):
+                yield (Chem.MolFromSmiles(re.sub('\[At\]','[H]',x_[0])),x_[1],x_[2])
+            else:
+                yield (Chem.MolFromSmiles(x_[0]),x_[1],x_[2])
+        if(protect ==True ):        
+            if(len(re.findall('[At]',smi))>0):
+                yield (Chem.MolFromSmiles(re.sub('\[At\]','[H]',smi)),'Unprotected',9)
+            else:
+                yield (mol,'Unprotected',9)
+        else:
+            if(len(re.findall('[At]',smi))>0):
+                yield (Chem.MolFromSmiles(re.sub('\[At\]','[H]',smi)),'Unprotected',0)
+            else:
+                yield (mol,'Unprotected',0)
+    except:
+        None   
+        
+        
+def joinupdata(dat,length_dat):
+    ret_str = []
+    if(len(dat) > 0):
+        for i in range (2,length_dat-2):
+            strcat = ""
+            for j in range (0, len(dat)):
+                strcat= strcat + str(dat[j][i]) + ";"
+            ret_str.append(strcat)
+    else:
+        for i in range (2,length_dat-2):
+            ret_str.append("")
+    return ret_str  
+
+
+def availability_analyze(amt,source,price=[],weight_units=[]):
+    if(source == 'GSK'):
+        amount = 0.0
+        all_solids = amt.split(";")[:-1]
+        for x in all_solids:
+            amount = amount + float(x)
+        return amount
+    if(source == 'ICARUS'):
+        all_solids = [float(x)*1000 for x in amt.split(";")[:-1]]
+        number_of_bottles = len(all_solids)
+        return str(round(max(all_solids), 2))+";"+str(number_of_bottles)
+    if(source == 'EMOLS'):
+        all_solids = [float(x) for x in amt.split(";")[:-1]]
+        all_price = [float(x) for x in price.split(";")[:-1]]
+        weight_units = [x for x in weight_units.split(";")[:-1]]
+        cost_per_gram = []
+        for i in range(0,len(all_solids)):
+            if(weight_units[i] == "g"):
+                cost_per_gram.append(all_price[i]/all_solids[i])
+            elif(weight_units[i] == "mg"):
+                cost_per_gram.append((all_price[i]*1000)/all_solids[i])
+            elif(weight_units[i] == "kg"):
+                cost_per_gram.append(all_price[i]/(all_solids[i]*1000))
+            else:
+                cost_per_gram.append(all_solids[i])
+        return min(cost_per_gram)
+    if(source == 'Frontier'):
+        amount = 0.0
+        all_solids = amt.split(";")[:-1]
+        for x in all_solids:
+            amount = amount + float(x)
+        return amount
+    
+    
+
+def getbuildingblocks(bb):
+    if(len(re.findall("\[B-\]",bb))> 0):
+        bb = "[K+]"+"."+bb
+    elif(len(re.findall("P+",bb))> 0):
+        bb = "[Br-]"+"."+bb
+    elif(len(re.findall("U+",bb))> 0):
+        bb = re.sub('U', 'P', bb)
+        bb = "[Cl-]"+"."+bb    
+    cnx= mysql.connector.connect(**config)
+        
+    m=Chem.MolFromSmiles(bb)
+    for x in protect_groups(m):
+        try:
+            inchi = Chem.MolToInchiKey(x[0])
+            cursor = cnx.cursor()
+            cursor.execute("SELECT * FROM GSK_SOLIDS_v2 JOIN Inchikeys_GSK_SOLIDS_v2 ON GSK_SOLIDS_v2.inchi_id = Inchikeys_GSK_SOLIDS_v2.id WHERE inchikey = '%s'"%inchi)
+            GSK_solids_data = cursor.fetchall()
+            cursor.close()
+            cursor = cnx.cursor()
+            cursor.execute("SELECT * FROM ICARUS_v2 JOIN Inchikeys_ICARUS_v2 ON ICARUS_v2.inchi_id = Inchikeys_ICARUS_v2.id WHERE inchikey = '%s'"%inchi)
+            ICARUS_data = cursor.fetchall()
+            cursor.close()
+            cursor = cnx.cursor()
+            cursor.execute("SELECT * FROM EMOLS JOIN Inchikeys_EMOLS ON EMOLS.inchi_id = Inchikeys_EMOLS.id WHERE inchikey = '%s'"%inchi)
+            EMOLS_data = cursor.fetchall()
+            cursor.close()
+            
+            cursor = cnx.cursor()
+            cursor.execute("SELECT * FROM Frontier JOIN Inchikeys_Frontier ON Frontier.inchi_id = Inchikeys_Frontier.id WHERE inchikey = '%s'"%inchi)
+            FRONTIER_data = cursor.fetchall()
+            cursor.close()
+            
+            
+            if (len(GSK_solids_data) == 0 and len(ICARUS_data) == 0 and len(EMOLS_data) == 0 and len(FRONTIER_data) == 0) :
+                 yield (False,Chem.MolToSmiles(x[0]),x[1],x[2],'','','','','','','','','','','','')
+#                 yield (False,Chem.MolToSmiles(x[0]),'','','','','','','','','','','','','','')
+            else:
+                gsk_avail = 0
+                icarus_avail = 0
+                emols_avail = 0
+                frontier_avail = 0
+                                
+                if(len(GSK_solids_data) > 0):
+                    gsk_avail = 1
+                if(len(ICARUS_data) > 0):
+                    icarus_avail = 2
+                if(len(EMOLS_data) > 0 ):
+                    emols_avail = 3
+                if(len(FRONTIER_data) >0):
+                    frontier_avail = 1
+
+                avail = str(frontier_avail)+";"+str(gsk_avail)+";"+str(icarus_avail)+";"+str(emols_avail)
+
+                GSK_solids_data = joinupdata(GSK_solids_data,12)
+                ICARUS_data = joinupdata(ICARUS_data,13)
+                EMOLS_data = joinupdata(EMOLS_data,16)
+                FRONTIER_data = joinupdata(FRONTIER_data,15)
+
+                out = Chem.MolToSmiles(x[0])
+
+                emols_pid = EMOLS_data[0].split(";")[0]
+
+                cmpd = ';'.join(list(set([x for x in GSK_solids_data[1].split(";") if x])))
+                casno = ';'.join(list(set([x for x in ICARUS_data[4].split(";") if x])))
+                mdlno = ';'.join(list(set([x for x in ICARUS_data[5].split(";") if x])))
+                tier = ';'.join(list(set([x for x in EMOLS_data[4].split(";") if x])))
+                
+                int_id = ';'.join(list(set([x for x in FRONTIER_data[1].split(";") if x])))
+                barcode = ';'.join(list(set([x for x in FRONTIER_data[2].split(";") if x])))
+                quant = ';'.join(list(set([x for x in FRONTIER_data[3].split(";") if x])))
+                unit = ';'.join(list(set([x for x in FRONTIER_data[4].split(";") if x])))
+                
+
+                gsk_total_amount = 0
+                frontier_total_amount = 0
+                icarus_availability = 0
+                emols_availability = 0
+                
+                if(gsk_avail == 1):
+                    gsk_total_amount = availability_analyze(GSK_solids_data[5],'GSK')
+                if(icarus_avail == 2):
+                    icarus_availability = availability_analyze(ICARUS_data[8],'ICARUS')
+                if(emols_avail == 3):
+                    emols_availability = availability_analyze(EMOLS_data[7],'EMOLS',EMOLS_data[9],EMOLS_data[8])
+                if(frontier_avail == 1):
+                    frontier_total_amount = availability_analyze(FRONTIER_data[3],'Frontier')
+                
+#                 yield (True,out,avail,int_id,barcode,frontier_total_amount,unit,cmpd,gsk_total_amount,casno,mdlno,icarus_availability,emols_pid,tier,emols_availability,x[1],x[2])
+                yield (True,out,avail,int_id,barcode,frontier_total_amount,unit,cmpd,gsk_total_amount,casno,mdlno,icarus_availability,emols_pid,tier,emols_availability,x[1],x[2])
+        except mysql.connector.Error as err:
+            print("SQL Error: {}, {}".format(err))
+
+
+
+bb_dict = {}
+# output = []
+# executor = futures.ThreadPoolExecutor()
+
+def run(query_smi):
+    mol_id = query_smi[1] 
+    smiles = query_smi[0]
+    bb_list = []
+    output = []
+    
+#  Check for Parwnt compound in the database
+#     bbs = [v for v in getbuildingblocks(smiles)]
+    
+    for xm in getbuildingblocks(smiles):
+        if(xm[0] == True):
+            output.append([xm[1],mol_id,'','','','Parent compound',xm[2],xm[3],xm[4],xm[5],xm[6],xm[7],xm[8],xm[9],xm[10],xm[11],xm[12],xm[13],xm[14],xm[15],
+                           '','','','','','','','','','','','','','','','',
+                            '','','','','','','','','','','','','','','','','','','',''])   
+    
+    frags = react(query_smi[0])    
+    
+    for x in frags.all_cuts():
+        
+#         print("Frags = {}".format(x))
+        
+        bb_list = x.split(",")[0].split(".")
+        ii = 0
+        first_group = []
+        second_group = []
+        third_group = [] 
+        out = ""
+        if(len(x.split(",")) == 4):
+            for brf in bb_list:
+                if brf in bb_dict.keys():
+                    if (ii ==0):
+                        first_group.append(bb_dict[brf])
+                        ii = ii + 1
+                    else:
+                        second_group.append(bb_dict[brf])        
+                else:    
+                    bbs= [v for v in getbuildingblocks(brf)]
+#                     bbs= [v for v in executor.submit(getbuildingblocks, brf)]
+
+                    if(ii == 0):
+                        first_group.append(bbs)
+                        ii = ii + 1
+                    else:
+                        second_group.append(bbs)                    
+                    bb_dict[brf] = bbs
+                
+                for fr in first_group:
+                    for xm in fr:
+                        for sec in second_group:
+                            for ym in sec:
+                                if(xm[0]== True and ym[0]==True):
+                                    output.append([smiles,mol_id,x.split(",")[1],x.split(",")[2],x.split(",")[3],xm[1],xm[2],xm[3],xm[4],xm[5],xm[6],xm[7],xm[8],xm[9],xm[10],xm[11],xm[12],xm[13],xm[14],xm[15],xm[16],
+                                                   ym[1],ym[2],ym[3],ym[4],ym[5],ym[6],ym[7],ym[8],ym[9],ym[10],ym[11],ym[12],ym[13],ym[14],ym[15],ym[16],
+                                                    '','','','','','','','','','','','','','','','','',''])
+                                elif(xm[0]== True and ym[0]==False):
+                                    output.append([smiles,mol_id,x.split(",")[1],x.split(",")[2],x.split(",")[3],xm[1],xm[2],xm[3],xm[4],xm[5],xm[6],xm[7],xm[8],xm[9],xm[10],xm[11],xm[12],xm[13],xm[14],xm[15],xm[16],
+                                                  '','','','','','','','','','','','','','','','',
+                                                  '','','','','','','','','','','','','','','','',ym[1],ym[2],ym[3]])
+                                elif(xm[0]== False and ym[0]==True):
+                                    output.append([smiles,mol_id,x.split(",")[1],x.split(",")[2],x.split(",")[3],'','','','','','','','','','','','','','','','',
+                                                  ym[1],ym[2],ym[3],ym[4],ym[5],ym[6],ym[7],ym[8],ym[9],ym[10],ym[11],ym[12],ym[13],ym[14],ym[15],ym[16],
+                                                  '','','','','','','','','','','','','','','','',xm[1],xm[2],xm[3]])
+                
+        elif(len(x.split(",")) == 7):
+            
+#             print("Sandeep")
+            for brf in bb_list:
+                if brf in bb_dict.keys():
+                    if (ii ==0):
+                        first_group.append(bb_dict[brf])
+                        ii = ii + 1
+                    elif(ii==1):
+                        second_group.append(bb_dict[brf])
+                        ii = ii + 1
+                    elif(ii==2):
+                        third_group.append(bb_dict[brf])
+                else:
+                    bbs= [v for v in getbuildingblocks(brf)]
+#                     bbs= [v for v in executor.submit(getbuildingblocks, brf)]
+                    bb_dict[brf] = bbs
+                    if (ii ==0):
+                        first_group.append(bbs)
+                        ii = ii + 1
+                    elif(ii==1):
+                        second_group.append(bbs)
+                        ii = ii +1
+                    elif(ii==2):
+                        third_group.append(bbs)
+                for fr in first_group:
+                    for xm in fr:
+                        for sec in second_group:
+                            for ym in sec:
+                                for th in third_group:
+                                    for zm in th:
+                                        if(xm[0]== True and ym[0]==True and zm[0]==True):
+                                            reaction = x.split(",")[1] + " AND " + x.split(",")[2]
+                                            reaction_rank = str(x.split(",")[3]) +";" +  str(x.split(",")[4])
+                                            reaction_prior = str(x.split(",")[5]) +";" +  str(x.split(",")[6])
+                                            output.append([smiles,mol_id,reaction,reaction_rank,reaction_prior,
+                                                          xm[1],xm[2],xm[3],xm[4],xm[5],xm[6],xm[7],xm[8],xm[9],xm[10],xm[11],xm[12],xm[13],xm[14],xm[15],xm[16], 
+                                                          ym[1],ym[2],ym[3],ym[4],ym[5],ym[6],ym[7],ym[8],ym[9],ym[10],ym[11],ym[12],ym[13],ym[14],ym[15],ym[16],
+                                                          zm[1],zm[2],zm[3],zm[4],zm[5],zm[6],zm[7],zm[8],zm[9],zm[10],zm[11],zm[12],zm[13],zm[14],zm[15],zm[16],'','',''])
+    return output
+
+
+
+
+min_quantity = 50
+def avail_score(df_):
+
+    for _, x_ in df_.iterrows():
+        if(x_['BB1_F'] != "Parent compound"):
+            avail_1 = x_['FRONTIER/GSK/ICARUS/EMOLECULES_1']
+            avail_2 = x_['FRONTIER/GSK/ICARUS/EMOLECULES_2']
+            avail_3 = x_['FRONTIER/GSK/ICARUS/EMOLECULES_3']
+
+            avail_score_1 = 0
+            avail_score_2 = 0
+            avail_score_3 = 0
+
+            protect_1 = 0
+            protect_2 = 0
+            protect_3 = 0
+
+            Score = 0
+
+            bb_priority_score = [0,0]
+            rxn_priority_score = [0,0]
+
+            if(len(re.findall(";",x_['Reaction_Rank']))>0):
+                bb_scores = x_['Reaction_Rank'].split(";")
+                if(len(bb_scores) == 1):
+                    bb_priority_score[0] = int(bb_scores[0])
+                if(len(bb_scores) == 2):
+                    bb_priority_score[0] = int(bb_scores[0])
+                    bb_priority_score[1] = int(bb_scores[1])
+            else:
+                bb_priority_score[0] = int(x_['Reaction_Rank'])
+
+
+            if(len(re.findall(";",x_['Reaction_priority']))>0):
+                bb_scores = x_['Reaction_priority'].split(";")
+                if(len(bb_scores) == 1):
+                    rxn_priority_score[0] = int(bb_scores[0])
+                if(len(bb_scores) == 2):
+                    rxn_priority_score[0] = int(bb_scores[0])
+                    rxn_priority_score[1] = int(bb_scores[1])
+            else:
+                rxn_priority_score[0] = int(x_['Reaction_priority'])
+
+            if(isinstance(x_['Protection_1'], str) and x_['Protection_1'] != ''):
+                protect_1 = int(x_['Protect_priority_1'])      
+            if(isinstance(x_['Protection_2'], str) and x_['Protection_2'] != ''):
+                protect_2 = int(x_['Protect_priority_2'])
+            if(isinstance(x_['Protection_3'], str) and x_['Protection_3'] != ''):
+                protect_3 = int(x_['Protect_priority_3'])
+            if(isinstance(x_['Protection_NF'], str) and x_['Protection_NF'] != '' and x_['Protection_1'] == ''):
+                protect_1 = int(x_['Protection_priority_NF'])
+    #             print("protect_1_NF = {}".format(protect_1))
+            if(isinstance(x_['Protection_NF'], str) and x_['Protection_NF'] != '' and x_['Protection_2'] == ''):
+                protect_2 = int(x_['Protection_priority_NF'])   
+    #             print("protect_2_NF = {}".format(protect_2))
+
+
+            if (avail_1 != '' and isinstance(avail_1, str)):
+                avail_list = avail_1.split(";")                
+                if(avail_list[0] == "1" and x_['fssi_quant_1'] >= 0.1*min_quantity and x_['fssi_unit_1'] == "g"):
+                    avail_score_1 = 1.0
+                elif(avail_list[0] == "1" and x_['fssi_quant_1'] >= min_quantity and x_['fssi_unit_1'] == "mg"):
+                    avail_score_1 = 1.0 
+                elif(avail_list[1] == "1" and x_['GSK_Total_Amount(mg)_1'] >= min_quantity):
+                    avail_score_1 = 1.0
+                elif(avail_list[2] == "2"):
+                    avail_score_1 = 2.0
+                elif(avail_list[3] == "3"):
+                    if(len(re.findall("Tier 1", x_['tier_1'])) > 0):
+                        avail_score_1 = 3.1
+                    elif(len(re.findall("Tier 2", x_['tier_1'])) > 0 and len(re.findall("Tier 1", x_['tier_1'])) == 0):
+                        avail_score_1 = 3.2               
+                elif(avail_list[0] == "1" and x_['fssi_quant_1'] < 0.1*min_quantity and x_['fssi_quant_1'] == "g"):
+                    avail_score_1 = 3.0
+                elif(avail_list[0] == "1" and x_['fssi_quant_1'] < min_quantity and x_['fssi_quant_1'] == "mg"):
+                    avail_score_1 = 3.0
+                elif(avail_list[1] == "1" and x_['GSK_Total_Amount(mg)_1'] < min_quantity):
+                    avail_score_1 = 3.0
+
+            if (avail_2 != '' and isinstance(avail_2, str)):
+                avail_list = avail_2.split(";")
+                if(avail_list[0] == "1" and x_['fssi_quant_2'] >= 0.1*min_quantity and x_['fssi_unit_2'] == "g"):
+                    avail_score_2 = 1.0
+                elif(avail_list[0] == "1" and x_['fssi_quant_2'] >= min_quantity and x_['fssi_unit_2'] == "mg"):
+                    avail_score_2 = 1.0 
+                elif(avail_list[1] == "1" and x_['GSK_Total_Amount(mg)_2'] > min_quantity):
+                    avail_score_2 = 1.0
+                elif(avail_list[2] == "2"):
+                    avail_score_2 = 2.0
+                elif(avail_list[3] == "3"):
+                    if(len(re.findall("Tier 1", x_['tier_2']))> 0):
+                        avail_score_2 = 3.1
+                    elif(len(re.findall("Tier 2", x_['tier_2'])) > 0 and len(re.findall("Tier 1", x_['tier_2'])) == 0):
+                        avail_score_2 = 3.2
+                elif(avail_list[0] == "1" and x_['fssi_quant_2'] < 0.1*min_quantity and x_['fssi_unit_2'] == "g"):
+                    avail_score_2 = 3.0
+                elif(avail_list[0] == "1" and x_['fssi_quant_2'] < min_quantity and x_['fssi_unit_2'] == "mg"):
+                    avail_score_2 = 3.0
+                elif(avail_list[1] == "1" and x_['GSK_Total_Amount(mg)_2'] < min_quantity):
+                    avail_score_2 = 3.0
+
+
+            if (avail_3 != ''and isinstance(avail_3, str)):
+                avail_list = avail_3.split(";")
+                if(avail_list[0] == "1" and x_['fssi_quant_3'] >= 0.1*min_quantity and x_['fssi_unit_3'] == "g"):
+                    avail_score_3 = 1.0
+                elif(avail_list[0] == "1" and x_['fssi_quant_3'] >= min_quantity and x_['fssi_unit_3'] == "mg"):
+                    avail_score_3 = 1.0 
+                elif(avail_list[1] == "1" and x_['GSK_Total_Amount(mg)_3'] > min_quantity):
+                    avail_score_3 = 1.0
+                elif(avail_list[2] == "2"):
+                    avail_score_3 = 2.0
+                elif(avail_list[3] == "3"):
+                    if(len(re.findall("Tier 1", x_['tier_3']))> 0):
+                        avail_score_3 = 3.1
+                    elif(len(re.findall("Tier 2", x_['tier_3'])) > 0 and len(re.findall("Tier 1", x_['tier_3'])) == 0):
+                        avail_score_3 = 3.2
+                elif(avail_list[0] == "1" and x_['fssi_quant_3'] <  0.1*min_quantity and x_['fssi_unit_3'] == "g"):
+                    avail_score_3 = 3.0
+                elif(avail_list[0] == "1" and x_['fssi_quant_3'] < min_quantity and x_['fssi_unit_3'] == "mg"):
+                    avail_score_3 = 3.0
+                elif(avail_list[1] == "1" and x_['GSK_Total_Amount(mg)_3'] < min_quantity):
+                    avail_score_3 = 3.0
+
+            Score_1 = avail_score_1 + (0.01 * bb_priority_score[0]) + (0.01 * protect_1)  + (0.1 * rxn_priority_score[0])
+            Score_2 = avail_score_2 + (0.01 * bb_priority_score[0]) + (0.01 * protect_2)  + (0.1 * rxn_priority_score[0])
+            Score_3 = avail_score_3 + (0.01 * bb_priority_score[1]) + (0.01 * protect_3)  + (0.1 * rxn_priority_score[1]) + 8   
+
+
+            if(isinstance(avail_1, str) and isinstance(x_['BB_NF'], str) and x_['BB_NF'] != '' ):
+    #             print("Score_1 = {}, Score_2_NF = {}, protect_1 = {}".format(Score_1,Score_2,protect_1))
+                Score = Score_1 + Score_2 + 100
+            elif(isinstance(avail_2, str) and isinstance(x_['BB_NF'], str) and x_['BB_NF'] != ''):
+    #             print("Score_1_NF = {},Score_2= {}, protect_2 = {}".format(Score_1, Score_2,protect_2))
+                Score = Score_1 + Score_2 + 100
+            elif(isinstance(avail_3, str) and x_['BB3_F']!= ''):
+                Score = Score_1 + Score_2 + Score_3
+            else:
+                Score = Score_1 + Score_2
+
+            yield Score
+        else:
+            Score = 0
+            yield Score
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="python dHTC_parallel.py inputsmiles ncpus outputsmiles")
+    parser.add_argument("inputsmiles", help="Input is a comma separated Smiles file. Please make sure Smiles header is called 'Compound Structure' and ID header is called 'ID' ")
+    parser.add_argument("ncpus", help= "Input the number of cpus. Out Linux workstations have approximately 30 cpus. So the value cane be 30. You can find this information using cat /proc/cpuinfo")
+    parser.add_argument("outputsmiles", help="output file")
+    parser.add_argument("-v", dest="verbose", action="store_true", 
+                        help="Given an input smiles file, number of cpus and an output file and the code will generate Building Blocks using a Database search. The code needs a reaction.json file. This file should be in the current directory.")
+    args = parser.parse_args()
+
+    file = args.inputsmiles
+    outputfile = args.outputsmiles
+    out = []
+    ncpus = int(args.ncpus)
+    mol_df = pd.read_csv(file)
+    smiles_list = []
+    s= Standardizer()
+    for _,x_ in mol_df.iterrows():
+        try:
+            smiles_list.append((x_['Compound Structure'],x_['ID']))
+        except:
+            print("Problematic Molecule = {}".format(x_['Compound Structure'])) 
+    p = Pool(ncpus)
+    
+    for x in p.map(run,smiles_list):
+        for y in x:
+            out.append(y)
+#     executor.shutdown()
+
+
+df = pd.DataFrame(out)
+
+# df = pd.DataFrame(out)
+df.columns = ['Smiles','ID','Reaction','Reaction_Rank','Reaction_priority',
+              'BB1_F','FRONTIER/GSK/ICARUS/EMOLECULES_1','fssi_internal_id_1','fssi_barcode_1','fssi_quant_1','fssi_unit_1','CMPD_NUM_1','GSK_Total_Amount(mg)_1','CAS_1','MDL_1','ICARUS_Biggest_Bottle;Num_Bottles_1','EMOL_parentid_1','tier_1','EMOLS_Min_Cost_per_gram_1','Protection_1','Protect_priority_1',
+              'BB2_F','FRONTIER/GSK/ICARUS/EMOLECULES_2','fssi_internal_id_2','fssi_barcode_2','fssi_quant_2','fssi_unit_2','CMPD_NUM_2','GSK_Total_Amount(mg)_2','CAS_2','MDL_2','ICARUS_Biggest_Bottle;Num_Bottles_2','EMOL_parentid_2','tier_2','EMOLS_Min_Cost_per_gram_2','Protection_2','Protect_priority_2',
+              'BB3_F','FRONTIER/GSK/ICARUS/EMOLECULES_3','fssi_internal_id_3','fssi_barcode_3','fssi_quant_3','fssi_unit_3','CMPD_NUM_3','GSK_Total_Amount(mg)_3','CAS_3','MDL_3','ICARUS_Biggest_Bottle;Num_Bottles_3','EMOL_parentid_3','tier_3','EMOLS_Min_Cost_per_gram_3','Protection_3','Protect_priority_3','BB_NF','Protection_NF','Protection_priority_NF']
+
+
+df['Score'] = [x for x in avail_score(df)]
+df = df.rename(columns={"Reaction_Rank": "BB_Priority"})
+df.to_csv(outputfile)

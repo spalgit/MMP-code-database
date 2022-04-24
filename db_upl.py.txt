@@ -1,0 +1,873 @@
+import sys, re
+from molvs import Standardizer
+from rdkit import Chem
+import pandas as pd
+import numpy as np
+import mysql.connector
+from mysql.connector import errorcode
+import operator
+
+config = {
+    'user': 'sp459402',
+    'password': 'B3tab1es',
+    'host': 'uk1salx00547',
+    'database': 'building_blocks',
+    'raise_on_warnings': True, 
+}
+
+link = mysql.connector.connect(**config)
+
+s= Standardizer()
+
+TABLES ={}
+TABLES['Inchikeys_GSK_SOLIDS_v2'] = (
+    "CREATE TABLE IF NOT EXISTS `Inchikeys_GSK_SOLIDS_v2` ("
+    "  `id` INTEGER NOT NULL AUTO_INCREMENT,"
+    "  `inchikey` varchar(255) UNIQUE,"
+    "  PRIMARY KEY (`id`)"
+    ") ENGINE=InnoDB")
+TABLES['Smiles_GSK_SOLIDS_v2'] = (
+    "CREATE TABLE IF NOT EXISTS `Smiles_GSK_SOLIDS_v2` ("
+    "  `id` INTEGER NOT NULL AUTO_INCREMENT,"
+    "  `smiles` varchar(255) UNIQUE,"
+    "  PRIMARY KEY (`id`)"
+    ") ENGINE=InnoDB")
+TABLES['GSK_SOLIDS_v2'] = (
+    "CREATE TABLE IF NOT EXISTS `GSK_SOLIDS_v2` ("
+    "  `inchi_id` INTEGER,"
+    "  `smiles_id` INTEGER,"
+    "  `LNB_REF` varchar(20),"
+    "  `REGNO` varchar(20),"
+    "  `PCN` varchar(20),"
+    "  `PREF_PCN` varchar(20),"
+    "  `UCS_ID` varchar(20),"
+    "  `AMOUNT` varchar(20),"
+    "  `UNITS` varchar(5),"
+    "  `BOTTLE_NUMBER` varchar(20),"
+    "  `DESCRIPTION` varchar(200),"
+    "  `STOCK_ITEM` varchar(20),"
+    "  CONSTRAINT FOREIGN KEY (`inchi_id`) "
+    "     REFERENCES `Inchikeys_GSK_SOLIDS_v2` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,"
+    "  CONSTRAINT FOREIGN KEY (`smiles_id`) "
+    "     REFERENCES `Smiles_GSK_SOLIDS_v2` (`id`) ON DELETE CASCADE ON UPDATE CASCADE"
+    ") ENGINE=InnoDB")
+
+df = pd.read_csv("/hpc/mydata/stv/sp459402/Building_Blocks/Subhash_BBs/Sandeep_Pal_BradShaw_BB/GSK_ID_Solids_new.txt", sep = '\t')
+
+cnx= mysql.connector.connect(**config)
+cursor = cnx.cursor()
+# cursor.execute('DROP TABLE IF EXISTS GSK_SOLIDS_v2')
+# cursor.execute('DROP TABLE IF EXISTS Inchikeys_GSK_SOLIDS_v2')
+# cursor.execute('DROP TABLE IF EXISTS Smiles_GSK_SOLIDS_v2')
+
+
+for table_name in TABLES:
+    table_description = TABLES[table_name]
+    try:
+        print("Creating Table {}: ".format(table_name), end= '')
+        cursor.execute(table_description)
+    except mysql.connector.Error as err:
+        if err.errno == errorcode.ER_TABLE_EXISTS_ERROR:
+            print("Table already exists {}".format(table_name))
+        else:
+            print(err.msg)
+cursor.close()
+cnx.close()
+
+
+cnx= mysql.connector.connect(**config)
+cursor = cnx.cursor()
+
+for _, dat_ in df.iterrows():
+    try:
+        mol = s.standardize(Chem.MolFromSmiles(dat_['PSMILES']))
+        inchi = Chem.MolToInchiKey(mol)
+        smi = dat_['PSMILES']
+        LNB_REF = dat_['LNB_REF']
+        REGNO = dat_['REGNO']
+        PCN = dat_['PCN']
+        PREF_PCN = dat_['PREF_PCN']
+        UCS_ID = dat_['UCS_ID']
+        AMOUNT = dat_['AMOUNT']
+        UNITS = dat_['UNITS']
+        BOTTLE_NUMBER = dat_['BOTTLE_NUMBER']
+        DESCRIPTION = dat_['DESCRIPTION']
+        STOCK_ITEM = dat_['STOCK_ITEM']
+
+        try:
+            operation = "INSERT INTO Inchikeys_GSK_SOLIDS_v2 (inchikey) VALUES ('%s')" %inchi
+            cursor.execute(operation)
+            inchi_id = cursor.lastrowid
+            cnx.commit()
+            operation = "INSERT INTO Smiles_GSK_SOLIDS_v2 (smiles) VALUES ('%s')" %smi
+            cursor.execute(operation)
+            smiles_id = cursor.lastrowid                
+            cnx.commit()
+            cursor.execute("INSERT INTO GSK_SOLIDS_v2 (inchi_id,smiles_id,LNB_REF,REGNO,PCN,PREF_PCN,UCS_ID,AMOUNT,UNITS,BOTTLE_NUMBER,DESCRIPTION,STOCK_ITEM) VALUES ('%s','%s','%s','%s','%s','%s','%s','%s','%s','%s','%s','%s')" %(inchi_id,smiles_id,LNB_REF,REGNO,PCN,PREF_PCN,UCS_ID,AMOUNT,UNITS,BOTTLE_NUMBER,DESCRIPTION,STOCK_ITEM))
+            cnx.commit()
+        except mysql.connector.Error as err:
+#             print("ITEM = {}, Solid_Collection_SLD = {}, Solid_Collection_Reserve_SLD = {}".format(dat_['ITEM'],dat_['Solid_Collection_SLD'],dat_['Solid_Collection_Reserve_SLD'] ) )
+            cursor.execute("SELECT id FROM Inchikeys_GSK_SOLIDS_v2 WHERE inchikey = '%s'"%inchi)
+            inchi_id = cursor.fetchall()[0][0]
+            cursor.execute("SELECT id FROM Smiles_GSK_SOLIDS_v2 WHERE smiles = '%s'"%smi)
+            smiles_id = cursor.fetchall()[0][0]
+            cursor.execute("INSERT INTO GSK_SOLIDS_v2 (inchi_id,smiles_id,LNB_REF,REGNO,PCN,PREF_PCN,UCS_ID,AMOUNT,UNITS,BOTTLE_NUMBER,DESCRIPTION,STOCK_ITEM) VALUES ('%s','%s','%s','%s','%s','%s','%s','%s','%s','%s','%s','%s')" %(inchi_id,smiles_id,LNB_REF,REGNO,PCN,PREF_PCN,UCS_ID,AMOUNT,UNITS,BOTTLE_NUMBER,DESCRIPTION,STOCK_ITEM))
+#             cursor.execute("INSERT INTO GSK_SOLIDS_NEW (inchi_id,smiles_id,LNB_REF,REGNO,PCN,PREF_PCN,UCS_ID,ITEM,Solid_Collection_SLD) VALUES ('%s','%s','%s','%s','%s','%s','%s','%s','%s')" %(inchi_id,smiles_id,LNB_REF,REGNO,PCN,PREF_PCN,UCS_ID,ITEM,Solid_Collection_SLD))
+            cnx.commit()
+            print("SQL Error_1: {}".format(err ))    
+    except:
+        print("Problematic Smiles {}". format(dat_['PSMILES']))
+
+
+cursor.execute("SELECT * FROM GSK_SOLIDS_v2")
+
+print(len(cursor.fetchall()))
+
+cursor.execute("SELECT * FROM Inchikeys_GSK_SOLIDS_v2")
+
+print(len(cursor.fetchall()))
+
+
+
+-----------------------
+
+
+
+Score_dHTC_func
+
+from rdkit.Chem import PandasTools
+import pandas as pd
+import os
+import pickle
+import re 
+import time
+import numpy as np
+
+import sys
+import argparse  
+import operator
+
+
+from sklearn import preprocessing
+
+
+# # Reaction Frequency
+#  This code has to be used with the previous code so plase just keep it in the same directory and the dHTD code.
+
+
+def freq(group):
+    return group.shape[0]
+
+
+def get_rank(series, Normalize = False):
+    diction = {}
+    count = 1
+    min_max_scaler = preprocessing.MinMaxScaler()
+    for x in list(series):
+        if (x not in diction):
+            diction[x]= count
+            count = count +1
+    df_ranks = pd.DataFrame.from_dict(diction, orient= 'index', columns= ['Rank'])
+    df_ranks = df_ranks.reset_index()
+    if(Normalize == True):
+        x = df_ranks['Rank'].values.reshape(-1,1)
+        x_scaled = min_max_scaler.fit_transform(x)
+        df = pd.DataFrame(x_scaled)
+        df_ranks = pd.merge(df_ranks, df, left_index=True, right_index=True)
+        df_ranks = df_ranks.drop(['Rank'], axis=1)
+        df_ranks = df_ranks.rename(columns={0: "Rank"})
+        return df_ranks
+    else:     
+        return df_ranks
+
+
+def two_step_canonicalize(reaction):
+    reactions = reaction.split("AND")
+    r1 = reactions[0].rstrip().lstrip()
+    r2 = reactions[1].rstrip().lstrip()
+    reactions_new = []
+    reactions_new.append(r1)
+    reactions_new.append(r2)
+    reactions_new.sort()
+    return reactions_new[0]+" AND " + reactions_new[1]
+
+def get_reaction_canonicalize(group):
+    ll = list(group['Reaction'].reset_index()['index'])
+    reaction =  group['Reaction'][ll[0]]
+    reactions = reaction.split("AND")
+    r1 = reactions[0].rstrip().lstrip()
+    r2 = reactions[1].rstrip().lstrip()
+    reactions_new = []
+    reactions_new.append(r1)
+    reactions_new.append(r2)
+    reactions_new.sort()
+    reaction = reactions_new[0]+" AND " + reactions_new[1]
+    reaction_n = {}
+    for x in ll:
+        reaction_n[x] = reaction
+    group["Reaction_cl"] = pd.Series(data=reaction_n, index = ll)
+    return group
+
+
+def rank_comps_acc_score(group):
+    rank = 1
+    ranks = {}
+    ll = list(group['Smiles'].reset_index()['index'])
+    for x in ll:
+        ranks[x] = rank
+        rank = rank + 1   
+    group["Rank_from_Score"] = pd.Series(data=ranks, index = ll)
+    return group
+
+
+min_quantity = 50
+
+def avail_score(df_):
+
+    for _, x_ in df_.iterrows():
+        avail_1 = x_['FRONTIER/GSK/ICARUS/EMOLECULES_1']
+        avail_2 = x_['FRONTIER/GSK/ICARUS/EMOLECULES_2']
+        avail_3 = x_['FRONTIER/GSK/ICARUS/EMOLECULES_3']
+        
+        avail_score_1 = 0
+        avail_score_2 = 0
+        avail_score_3 = 0
+        
+        protect_1 = 0
+        protect_2 = 0
+        protect_3 = 0
+        
+        Score = 0
+        
+        bb_priority_score = [0,0]
+        rxn_priority_score = [0,0]
+        
+        if(len(re.findall(";",x_['Reaction_Rank']))>0):
+            bb_scores = x_['Reaction_Rank'].split(";")
+            if(len(bb_scores) == 1):
+                bb_priority_score[0] = int(bb_scores[0])
+            if(len(bb_scores) == 2):
+                bb_priority_score[0] = int(bb_scores[0])
+                bb_priority_score[1] = int(bb_scores[1])
+        else:
+            bb_priority_score[0] = int(x_['Reaction_Rank'])
+         
+        
+        if(len(re.findall(";",x_['Reaction_priority']))>0):
+            bb_scores = x_['Reaction_priority'].split(";")
+            if(len(bb_scores) == 1):
+                rxn_priority_score[0] = int(bb_scores[0])
+            if(len(bb_scores) == 2):
+                rxn_priority_score[0] = int(bb_scores[0])
+                rxn_priority_score[1] = int(bb_scores[1])
+        else:
+            rxn_priority_score[0] = int(x_['Reaction_priority'])
+
+        if(x_['Protection_1'] != "Unprotected" and isinstance(x_['Protection_1'], str) and x_['Protection_1'] != ''):
+            protect_1 = int(float(x_['Protect_priority_1']))
+        elif(x_['Protection_1'] == "Unprotected"):
+            protect_1 = 9            
+        if(x_['Protection_2'] != "Unprotected" and isinstance(x_['Protection_2'], str) and x_['Protection_2'] != ''):
+            protect_2 = int(float(x_['Protect_priority_2']))
+        elif(x_['Protection_2'] == "Unprotected"):
+            protect_2 = 9
+        if(x_['Protection_3'] != "Unprotected" and isinstance(x_['Protection_3'], str) and x_['Protection_3'] != ''):
+            protect_3 = int(float(x_['Protect_priority_3']))
+        elif(x_['Protection_3'] == "Unprotected"):
+            protect_3 = 9
+            
+        if (avail_1 != '' and isinstance(avail_1, str)):
+            avail_list = avail_1.split(";")                
+            if(avail_list[0] == "1" and x_['fssi_quant_1'] >= 0.1*min_quantity and x_['fssi_unit_1'] == "g"):
+                avail_score_1 = 1.0
+            elif(avail_list[0] == "1" and x_['fssi_quant_1'] >= min_quantity and x_['fssi_unit_1'] == "mg"):
+                avail_score_1 = 1.0 
+            elif(avail_list[1] == "1" and x_['GSK_Total_Amount(mg)_1'] >= min_quantity):
+                avail_score_1 = 1.0
+            elif(avail_list[2] == "2"):
+                avail_score_1 = 2.0
+            elif(avail_list[3] == "3"):
+                if(len(re.findall("Tier 1", x_['tier_1'])) > 0):
+                    avail_score_1 = 3.1
+                elif(len(re.findall("Tier 2", x_['tier_1'])) > 0 and len(re.findall("Tier 1", x_['tier_1'])) == 0):
+                    avail_score_1 = 3.2               
+            elif(avail_list[0] == "1" and x_['fssi_quant_1'] < 0.1*min_quantity and x_['fssi_quant_1'] == "g"):
+                avail_score_1 = 3.0
+            elif(avail_list[0] == "1" and x_['fssi_quant_1'] < min_quantity and x_['fssi_quant_1'] == "mg"):
+                avail_score_1 = 3.0
+            elif(avail_list[1] == "1" and x_['GSK_Total_Amount(mg)_1'] < min_quantity):
+                avail_score_1 = 3.0
+                
+        if (avail_2 != '' and isinstance(avail_2, str)):
+            avail_list = avail_2.split(";")
+            if(avail_list[0] == "1" and x_['fssi_quant_2'] >= 0.1*min_quantity and x_['fssi_unit_2'] == "g"):
+                avail_score_2 = 1.0
+            elif(avail_list[0] == "1" and x_['fssi_quant_2'] >= min_quantity and x_['fssi_unit_2'] == "mg"):
+                avail_score_2 = 1.0 
+            elif(avail_list[1] == "1" and x_['GSK_Total_Amount(mg)_2'] > min_quantity):
+                avail_score_2 = 1.0
+            elif(avail_list[2] == "2"):
+                avail_score_2 = 2.0
+            elif(avail_list[3] == "3"):
+                if(len(re.findall("Tier 1", x_['tier_2']))> 0):
+                    avail_score_2 = 3.1
+                elif(len(re.findall("Tier 2", x_['tier_2'])) > 0 and len(re.findall("Tier 1", x_['tier_2'])) == 0):
+                    avail_score_2 = 3.2
+            elif(avail_list[0] == "1" and x_['fssi_quant_2'] < 0.1*min_quantity and x_['fssi_unit_2'] == "g"):
+                avail_score_2 = 3.0
+            elif(avail_list[0] == "1" and x_['fssi_quant_2'] < min_quantity and x_['fssi_unit_2'] == "mg"):
+                avail_score_2 = 3.0
+            elif(avail_list[1] == "1" and x_['GSK_Total_Amount(mg)_2'] < min_quantity):
+                avail_score_2 = 3.0
+                
+                
+        if (avail_3 != ''and isinstance(avail_3, str)):
+            avail_list = avail_3.split(";")
+            if(avail_list[0] == "1" and x_['fssi_quant_3'] >= 0.1*min_quantity and x_['fssi_unit_3'] == "g"):
+                avail_score_3 = 1.0
+            elif(avail_list[0] == "1" and x_['fssi_quant_3'] >= min_quantity and x_['fssi_unit_3'] == "mg"):
+                avail_score_3 = 1.0 
+            elif(avail_list[1] == "1" and x_['GSK_Total_Amount(mg)_3'] > min_quantity):
+                avail_score_3 = 1.0
+            elif(avail_list[2] == "2"):
+                avail_score_3 = 2.0
+            elif(avail_list[3] == "3"):
+                if(len(re.findall("Tier 1", x_['tier_3']))> 0):
+                    avail_score_3 = 3.1
+                elif(len(re.findall("Tier 2", x_['tier_3'])) > 0 and len(re.findall("Tier 1", x_['tier_3'])) == 0):
+                    avail_score_3 = 3.2
+            elif(avail_list[0] == "1" and x_['fssi_quant_3'] <  0.1*min_quantity and x_['fssi_unit_3'] == "g"):
+                avail_score_3 = 3.0
+            elif(avail_list[0] == "1" and x_['fssi_quant_3'] < min_quantity and x_['fssi_unit_3'] == "mg"):
+                avail_score_3 = 3.0
+            elif(avail_list[1] == "1" and x_['GSK_Total_Amount(mg)_3'] < min_quantity):
+                avail_score_3 = 3.0
+
+        Score_1 = avail_score_1 + (0.01 * bb_priority_score[0]) - (0.01 * protect_1)  + (0.1 * rxn_priority_score[0])
+        Score_2 = avail_score_2 + (0.01 * bb_priority_score[0]) - (0.01 * protect_2)  + (0.1 * rxn_priority_score[0])
+        Score_3 = avail_score_3 + (0.01 * bb_priority_score[1]) - (0.01 * protect_3)  + (0.1 * rxn_priority_score[1]) + 8        
+        
+        if(isinstance(avail_1, str) and isinstance(x_['BB_NF'], str)):
+            Score = Score_1 + Score_2 + 100
+        elif(isinstance(avail_2, str) and isinstance(x_['BB_NF'], str)):
+            Score = Score_1 + Score_2 + 100
+        elif(isinstance(avail_3, str)):
+            Score = Score_1 + Score_2 + Score_3
+        else:
+            Score = Score_1 + Score_2
+                        
+        yield Score
+
+# def Score(df):
+#     df_avail_all = df[df['BB_NF']=='']
+#     df_avail_one_step = df_avail_all[df_avail_all['BB3_F']=='']
+#     df_avail_two_step = df_avail_all[df_avail_all['BB3_F']!= '']
+#     df_avail_one_step_bb_nf = df[df['BB_NF']!='']
+   
+#     #  One Step with both BBs found
+    
+#     if(df_avail_one_step.shape[0] > 0):
+    
+#         df_reaction= pd.DataFrame(df_avail_one_step.groupby('Reaction').apply(freq))
+#         df_reaction.columns= ['Reaction_frequency']
+#         df_reaction.reset_index(inplace=True)
+#         df_avail_one_step = pd.merge(df_avail_one_step, df_reaction, how = 'left', on=['Reaction'])
+#         df_avail_one_step.sort_values(by=['Reaction_frequency'], ascending=False, inplace=True)
+#         df_ranks = get_rank(df_avail_one_step['Reaction'], Normalize= True)
+#         df_ranks.rename(columns={"index": "Reaction"}, inplace=True)
+#         df_avail_one_step = pd.merge(df_avail_one_step,df_ranks, how = 'outer', on=['Reaction'])
+#         df_avail_one_step = df_avail_one_step.rename(columns={"Rank": "Reaction_Rank"})
+
+#         df_BB1_F= pd.DataFrame(df_avail_one_step.groupby('BB1_F').apply(freq))
+#         df_BB2_F= pd.DataFrame(df_avail_one_step.groupby('BB2_F').apply(freq))
+#         df_BB1_F.reset_index(inplace=True)
+#         df_BB1_F =df_BB1_F.rename(columns={0: "BB1_F_Freq", 'BB1_F': 'BB_F'})
+#         df_BB2_F.reset_index(inplace=True)
+#         df_BB2_F =df_BB2_F.rename(columns={0: "BB2_F_Freq", 'BB2_F': 'BB_F'})
+#         df_BB_F = pd.merge(df_BB1_F,df_BB2_F, how = 'outer', on=['BB_F'])
+#         df_BB_F = df_BB_F.replace(np.nan, 0)
+#         df_BB_F['BB_F_Freq'] = df_BB_F['BB1_F_Freq'] + df_BB_F['BB2_F_Freq']
+#         df_BB_F = df_BB_F.drop(['BB1_F_Freq', 'BB2_F_Freq'], axis=1)
+#         df_BB1_F =df_BB_F.rename(columns={"BB_F": "BB1_F", "BB_F_Freq": "BB1_F_Freq"})
+#         df_avail_one_step = pd.merge(df_avail_one_step, df_BB1_F, how = 'left', on=['BB1_F'])
+#         df_BB2_F =df_BB_F.rename(columns={"BB_F": "BB2_F", "BB_F_Freq": "BB2_F_Freq"})
+#         df_avail_one_step = pd.merge(df_avail_one_step, df_BB2_F, how = 'left', on=['BB2_F'])
+
+#         df_avail_one_step.sort_values(by=['BB1_F_Freq'], ascending=False, inplace=True)
+#         df_bb_f_ranks = get_rank(df_avail_one_step['BB1_F'], Normalize = True)
+#         df_bb_f_ranks.rename(columns={"index": "BB1_F"}, inplace=True)
+#         df_avail_one_step = pd.merge(df_avail_one_step,df_bb_f_ranks, how = 'outer', on=['BB1_F'])
+#         df_avail_one_step = df_avail_one_step.rename(columns={"Rank": "BB1_F_Rank"})
+
+#         df_avail_one_step.sort_values(by=['BB2_F_Freq'], ascending=False, inplace=True)
+#         df_bb_f_ranks = get_rank(df_avail_one_step['BB2_F'], Normalize = True)
+#         df_bb_f_ranks.rename(columns={"index": "BB2_F"}, inplace=True)
+#         df_avail_one_step = pd.merge(df_avail_one_step,df_bb_f_ranks, how = 'outer', on=['BB2_F'])
+#         df_avail_one_step = df_avail_one_step.rename(columns={"Rank": "BB2_F_Rank"})
+
+#         df_avail_one_step['Score'] = df_avail_one_step['Reaction_Rank'] + df_avail_one_step['BB1_F_Rank'] + df_avail_one_step['BB2_F_Rank']
+#         df_avail_one_step.sort_values(by=['Score'], inplace=True)
+#         df_avail_one_step["BB_Found"] = 2 
+#         df_avail_one_step["Steps"] = 1
+
+#         df_avail_one_step['BB3_F_Freq'] = ""
+#         df_avail_one_step['BB3_F_Rank'] = ""
+#         df_avail_one_step['BB_NF_Freq'] = ""
+#         df_avail_one_step['BB_NF_Rank'] = ""
+    
+#     # One Step with One BB missing
+#     if(df_avail_two_step.shape[0] > 0): 
+#         df_reaction= pd.DataFrame(df_avail_one_step_bb_nf.groupby('Reaction').apply(freq))
+#         df_reaction.columns= ['Reaction_frequency']
+#         df_reaction.reset_index(inplace=True)
+#         df_avail_one_step_bb_nf = pd.merge(df_avail_one_step_bb_nf, df_reaction, how = 'left', on=['Reaction'])
+#         df_avail_one_step_bb_nf.sort_values(by=['Reaction_frequency'], ascending=False, inplace=True)
+
+
+#         df_ranks = get_rank(df_avail_one_step_bb_nf['Reaction'], Normalize= True)
+#         df_ranks.rename(columns={"index": "Reaction"}, inplace=True)
+#         df_avail_one_step_bb_nf = pd.merge(df_avail_one_step_bb_nf,df_ranks, how = 'outer', on=['Reaction'])
+#         df_avail_one_step_bb_nf = df_avail_one_step_bb_nf.rename(columns={"Rank": "Reaction_Rank"})
+
+#         df_BB1_F= pd.DataFrame(df_avail_one_step_bb_nf.groupby('BB1_F').apply(freq))
+#         df_BB2_F= pd.DataFrame(df_avail_one_step_bb_nf.groupby('BB2_F').apply(freq))
+#         df_BB_NF= pd.DataFrame(df_avail_one_step_bb_nf.groupby('BB_NF').apply(freq))
+
+#         df_BB1_F.reset_index(inplace=True)
+#         df_BB1_F =df_BB1_F.rename(columns={0: "BB1_F_Freq", 'BB1_F': 'BB_F'})
+#         df_BB2_F.reset_index(inplace=True)
+#         df_BB2_F =df_BB2_F.rename(columns={0: "BB2_F_Freq", 'BB2_F': 'BB_F'})
+#         df_BB_NF.reset_index(inplace=True)
+#         df_BB_NF =df_BB_NF.rename(columns={0: "BB_NF_Freq"})
+#         df_BB_F = pd.merge(df_BB1_F,df_BB2_F, how = 'outer', on=['BB_F'])
+#         df_BB_F = df_BB_F.replace(np.nan, 0)
+#         df_BB_F['BB_F_Freq'] = df_BB_F['BB1_F_Freq'] + df_BB_F['BB2_F_Freq']
+#         df_BB_F = df_BB_F.drop(['BB1_F_Freq', 'BB2_F_Freq'], axis=1)
+#         df_BB1_F =df_BB_F.rename(columns={"BB_F": "BB1_F", "BB_F_Freq": "BB1_F_Freq"})
+#         df_BB2_F =df_BB_F.rename(columns={"BB_F": "BB2_F", "BB_F_Freq": "BB2_F_Freq"})
+
+#         df_avail_one_step_bb_nf = pd.merge(df_avail_one_step_bb_nf, df_BB1_F, how = 'left', on=['BB1_F'])
+#         df_avail_one_step_bb_nf = pd.merge(df_avail_one_step_bb_nf, df_BB2_F, how = 'left', on=['BB2_F'])
+#         df_avail_one_step_bb_nf = pd.merge(df_avail_one_step_bb_nf, df_BB_NF, how = 'left', on=['BB_NF'])
+
+#         df_avail_one_step_bb_nf.sort_values(by=['BB1_F_Freq'], ascending=False, inplace=True)
+#         df_bb_f_ranks = get_rank(df_avail_one_step_bb_nf['BB1_F'], Normalize = True)
+#         df_bb_f_ranks.rename(columns={"index": "BB1_F"}, inplace=True)
+#         df_avail_one_step_bb_nf = pd.merge(df_avail_one_step_bb_nf,df_bb_f_ranks, how = 'outer', on=['BB1_F'])
+#         df_avail_one_step_bb_nf = df_avail_one_step_bb_nf.rename(columns={"Rank": "BB1_F_Rank"})
+
+#         df_avail_one_step_bb_nf.sort_values(by=['BB2_F_Freq'], ascending=False, inplace=True)
+#         df_bb_f_ranks = get_rank(df_avail_one_step_bb_nf['BB2_F'], Normalize = True)
+#         df_bb_f_ranks.rename(columns={"index": "BB2_F"}, inplace=True)
+#         df_avail_one_step_bb_nf = pd.merge(df_avail_one_step_bb_nf,df_bb_f_ranks, how = 'outer', on=['BB2_F'])
+#         df_avail_one_step_bb_nf = df_avail_one_step_bb_nf.rename(columns={"Rank": "BB2_F_Rank"})
+
+#         df_avail_one_step_bb_nf.sort_values(by=['BB_NF_Freq'], ascending=False, inplace=True)
+#         df_bb_f_ranks = get_rank(df_avail_one_step_bb_nf['BB_NF'], Normalize = True)
+#         df_bb_f_ranks.rename(columns={"index": "BB_NF"}, inplace=True)
+#         df_avail_one_step_bb_nf = pd.merge(df_avail_one_step_bb_nf,df_bb_f_ranks, how = 'outer', on=['BB_NF'])
+#         df_avail_one_step_bb_nf = df_avail_one_step_bb_nf.rename(columns={"Rank": "BB_NF_Rank"})
+
+#         df_avail_one_step_bb_nf['Score'] = 5.0 + df_avail_one_step_bb_nf['Reaction_Rank'] + df_avail_one_step_bb_nf['BB1_F_Rank'] + df_avail_one_step_bb_nf['BB2_F_Rank']+df_avail_one_step_bb_nf['BB_NF_Rank']
+
+#         df_avail_one_step_bb_nf.sort_values(by=['Score'],inplace=True)
+
+#         df_avail_one_step_bb_nf["BB_Found"] = 1 
+#         df_avail_one_step_bb_nf["Steps"] = 1
+
+#         df_avail_one_step_bb_nf['BB3_F_Freq'] = ""
+#         df_avail_one_step_bb_nf['BB3_F_Rank'] = ""
+    
+#     # Now Two Step reaction
+
+#     if(df_avail_two_step.shape[0] > 0):
+#         df_avail_two_step = df_avail_two_step.groupby('Reaction').apply(get_reaction_canonicalize)    
+#         df_reaction= pd.DataFrame(df_avail_two_step.groupby('Reaction_cl').apply(freq))
+#         df_reaction.columns= ['Reaction_frequency']
+#         df_reaction.reset_index(inplace=True)
+#         df_avail_two_step = pd.merge(df_avail_two_step, df_reaction, how = 'left', on=['Reaction_cl'])
+#         df_avail_two_step.sort_values(by=['Reaction_frequency'], ascending=False, inplace=True)
+
+#         df_ranks = get_rank(df_avail_two_step["Reaction_cl"], Normalize= True)
+#         df_ranks.rename(columns={"index": "Reaction_cl"}, inplace=True)
+#         df_avail_two_step = pd.merge(df_avail_two_step,df_ranks, how = 'outer', on=['Reaction_cl'])
+#         df_avail_two_step = df_avail_two_step.rename(columns={"Rank": "Reaction_Rank"})
+
+#         df_BB1_F= pd.DataFrame(df_avail_two_step.groupby('BB1_F').apply(freq))
+#         df_BB2_F= pd.DataFrame(df_avail_two_step.groupby('BB2_F').apply(freq))
+#         df_BB3_F= pd.DataFrame(df_avail_two_step.groupby('BB3_F').apply(freq))
+
+#         df_BB1_F.reset_index(inplace=True)
+#         df_BB1_F =df_BB1_F.rename(columns={0: "BB1_F_Freq", 'BB1_F': 'BB_F'})
+#         df_BB2_F.reset_index(inplace=True)
+#         df_BB2_F =df_BB2_F.rename(columns={0: "BB2_F_Freq", 'BB2_F': 'BB_F'})
+#         df_BB3_F.reset_index(inplace=True)
+#         df_BB3_F =df_BB3_F.rename(columns={0: "BB3_F_Freq", 'BB3_F': 'BB_F'})
+#         df_BB_F = pd.merge(df_BB1_F,df_BB2_F, how = 'outer', on=['BB_F'])
+#         df_BB_F = pd.merge(df_BB_F,df_BB3_F, how = 'outer', on=['BB_F'])
+#         df_BB_F = df_BB_F.replace(np.nan, 0)
+#         df_BB_F['BB_F_Freq'] = df_BB_F['BB1_F_Freq'] + df_BB_F['BB2_F_Freq'] + df_BB_F['BB3_F_Freq']
+#         df_BB_F = df_BB_F.drop(['BB1_F_Freq', 'BB2_F_Freq', 'BB3_F_Freq'], axis=1)
+#         df_BB1_F =df_BB_F.rename(columns={"BB_F": "BB1_F", "BB_F_Freq": "BB1_F_Freq"})
+#         df_BB2_F =df_BB_F.rename(columns={"BB_F": "BB2_F", "BB_F_Freq": "BB2_F_Freq"})
+#         df_BB3_F =df_BB_F.rename(columns={"BB_F": "BB3_F", "BB_F_Freq": "BB3_F_Freq"})
+
+#         df_avail_two_step = pd.merge(df_avail_two_step, df_BB1_F, how = 'left', on=['BB1_F'])
+#         df_avail_two_step = pd.merge(df_avail_two_step, df_BB2_F, how = 'left', on=['BB2_F'])
+#         df_avail_two_step = pd.merge(df_avail_two_step, df_BB3_F, how = 'left', on=['BB3_F'])
+
+#         df_avail_two_step.sort_values(by=['BB1_F_Freq'], ascending=False, inplace=True)
+#         df_bb_f_ranks = get_rank(df_avail_two_step['BB1_F'], Normalize = True)
+#         df_bb_f_ranks.rename(columns={"index": "BB1_F"}, inplace=True)
+#         df_avail_two_step = pd.merge(df_avail_two_step,df_bb_f_ranks, how = 'outer', on=['BB1_F'])
+#         df_avail_two_step = df_avail_two_step.rename(columns={"Rank": "BB1_F_Rank"})
+
+#         df_avail_two_step.sort_values(by=['BB2_F_Freq'], ascending=False, inplace=True)
+#         df_bb_f_ranks = get_rank(df_avail_two_step['BB2_F'], Normalize = True)
+#         df_bb_f_ranks.rename(columns={"index": "BB2_F"}, inplace=True)
+#         df_avail_two_step = pd.merge(df_avail_two_step,df_bb_f_ranks, how = 'outer', on=['BB2_F'])
+#         df_avail_two_step = df_avail_two_step.rename(columns={"Rank": "BB2_F_Rank"})
+
+#         df_avail_two_step.sort_values(by=['BB3_F_Freq'], ascending=False, inplace=True)
+#         df_bb_f_ranks = get_rank(df_avail_two_step['BB3_F'], Normalize = True)
+#         df_bb_f_ranks.rename(columns={"index": "BB3_F"}, inplace=True)
+#         df_avail_two_step = pd.merge(df_avail_two_step,df_bb_f_ranks, how = 'outer', on=['BB3_F'])
+#         df_avail_two_step = df_avail_two_step.rename(columns={"Rank": "BB3_F_Rank"})
+
+#         df_avail_two_step['Score'] = 3.0 + df_avail_two_step['Reaction_Rank'] + df_avail_two_step['BB1_F_Rank'] + df_avail_two_step['BB2_F_Rank']+df_avail_two_step['BB3_F_Rank']
+#         df_avail_two_step.sort_values(by=['Score'],inplace=True)
+
+#         df_avail_two_step["BB_Found"] = 2 
+#         df_avail_two_step["Steps"] = 2
+
+#         df_avail_two_step = df_avail_two_step.drop(['Reaction'],axis = 1)
+#         df_avail_two_step.rename(columns={'Reaction_cl': "Reaction"}, inplace=True)
+
+#         df_avail_two_step['BB_NF_Freq'] = ""
+#         df_avail_two_step['BB_NF_Rank'] = ""
+
+#         #  Now concat all the steps and return
+    
+#     df = pd.concat([df_avail_one_step,df_avail_two_step,df_avail_one_step_bb_nf])
+#     df.sort_values(by=['Score'], inplace=True)
+    
+#     df_ranked = df.groupby('Smiles').apply(rank_comps_acc_score)
+#     return df_ranked
+
+
+------------------
+
+
+reaction.json
+
+
+[
+    
+    {
+        "Name":"Amide Coupling",
+        "Reaction":["[C!$(C(=O)(N)(N)):1](=[O:2])!@[N:3]>>[C:1](=[O:2])O[At].[N:3][At]",
+                        "[C!$(C(=O)(N)(N)):1](=[O:2])!@[N:3]>>[C:1](=[O:2])Cl.[N:3][At]",
+                        "[C!$(C(=O)(N)(N)):1](=[O:2])!@[N:3]>>[C:1](=[O:2])OC.[N:3][At]"
+                       ],
+        "Rxn_Priority":2
+    },
+    {
+        "Name": "Urea Synthesis",
+        "Reaction": ["[CX3](=[O])([NX3:3])!@[NX3:4]>>[N!H0:3][At].[N!H0:4][At]"   
+                       ],
+        "Rxn_Priority":2
+        
+    },
+    {
+        "Name": "Ester Synthesis",
+        "Reaction": ["[C!$(C(=O)(N)(O)):1](=[O:2])!@[O$(O[CX4,c]):3]>>[C:1](=[O:2])-[O][At].[O!H0:3][At]"
+                                                   ],
+        "Rxn_Priority":2
+        
+    },
+    {
+        "Name": "Carbamate Synthesis",
+        "Reaction": ["[C$(C(=O)(N)(O))](=[O])(!@[O$(O[CX4,c]):3])(!@[N:4])>>[O:3][At].[N:4][At]" 
+                                                       ],
+        "Rxn_Priority":3
+        
+    },
+    {
+        "Name": "sp2-sp2 Suzuki Coupling",
+        "Reaction": ["[c:1]!@[c:2]>>[c:1][I].[c:2][B]([O])[O]",
+                                "[c:1]!@[c:2]>>[c:1][I].[c:2][B](O1)OC(C)(C)C1(C)(C)",
+                                "[c:1]!@[c:2]>>[c:1][Br].[c:2][B]([O])[O]",
+                                "[c:1]!@[c:2]>>[c:1][Br].[c:2][B](O1)OC(C)(C)C1(C)(C)",
+                                "[c:1]!@[c:2]>>[c:1][Cl].[c:2][B]([O])[O]",
+                                 "[c:1]!@[c:2]>>[c:1][Cl].[c:2][B](O1)OC(C)(C)C1(C)(C)",
+                                 "[c:1]!@[c:2]>>[c:1][O]S(=O)(=O)C(F)(F)F.[c:2][B]([O])[O]",
+                                 "[c:1]!@[c:2]>>[c:1][O]S(=O)(=O)C(F)(F)F.[c:2][B](O1)OC(C)(C)C1(C)(C)" 
+                       ],
+        "Rxn_Priority":2
+        
+    },
+    {
+      
+        "Name": "CO Buchwald",
+        "Reaction": ["[c:1]!@[OX2;$(O([CX4,c])([CX4,c]));!R;H0:2]>>[c:1][I].[O:2][At]", 
+                      "[c:1]!@[OX2;$(O([CX4,c])([CX4,c]));!R;H0:2]>>[c:1][Br].[O:2][At]"
+                       ],
+        "Rxn_Priority":3
+    },
+    {
+        "Name": "Mitsunobu",
+        "Reaction": ["[c:1][O$(O[CX4]);!R;H0][C@:3]>>[c:1][O][At].[C@@:3]O[At]",
+                     "[c:1][O$(O[CX4]);!R;H0][C@@:3]>>[c:1][O][At].[C@:3]O[At]",
+                     "[c:1]!@[O$(O[CX4]);!R;H0][C:3]>>[c:1][O][At].[C:3]O[At]"      
+                       ],
+        "Rxn_Priority":3
+        
+    },
+    { 
+        "Name": "Ullmann Buchwald SNAR",
+        "Reaction": ["[c:1]!@[NX3;!$(N(C=O)):2]>>[c:1][I].[NX3:2][At]", 
+                                "[c:1]!@[NX3;!$(N(C=O)):2]>>[c:1][Br].[NX3:2][At]"
+                               ],
+        "Rxn_Priority":2
+        
+    },
+    {
+        "Name": "Cham Lam Evans",
+        "Reaction": ["[c:1]!@[NX3$(N([CX4,c])([CX4,c])):2]>>[c:1](B(O)O).[NX3:2][At]",
+                        "[c:1]!@[NX3$(N([CX4,c])([CX4,c])):2]>>[c:1][B](O1)OC(C)(C)C1(C)(C).[NX3:2][At]"
+                       ],
+        "Rxn_Priority":3
+        
+    },
+    {
+        "Name": "Reductive Amination",
+        "Reaction": ["[CX4!H0:1]!@[NX3!$(NC=O):2]>>[CX4H0v4:1](=O).[NX3:2][At]" 
+                       ],
+        "Rxn_Priority":3
+        
+    },
+    {
+        "Name": "Alkylation",
+        "Reaction": ["[C;X4;H2:1]!@[#7X3!$(NC=O):2]>>[C:1](I).[NX3:2][At]", 
+                    "[C;X4;H2:1]!@[#7X3!$(NC=O):2]>>[C:1](Br).[NX3:2][At]",
+                    "[C;X4;H2:1]!@[#7X3!$(NC=O):2]>>[C:1](Cl).[NX3:2][At]", 
+                    "[C;X4;H2:1]!@[#7X3!$(NC=O):2]>>[C:1][O]S(=O)(=O)C.[NX3:2][At]"
+                     ],
+        "Rxn_Priority":3
+        
+    },
+    {
+        "Name": "sp2-sp3 Suzuki Coupling",
+        "Reaction": ["[CX4!$(C[F,Cl,Br,I,O]):1]!@[c:2]>>[C:1]([B-](F)(F)(F)).[c:2](I)", 
+                                 "[CX4!$(C[F,Cl,Br,I,O]):1]!@[c:2]>>[C:1]([B-](F)(F)(F)).[c:2](Br)",
+                                 "[CX4!$(C[F,Cl,Br,I,O]):1]!@[c:2]>>[C:1]([B-](F)(F)(F)).[c:2](Cl)",
+                                 "[CX4!$(C[F,Cl,Br,I,O]):1]!@[c:2]>>[C:1]([B-](F)(F)(F)).[c:2][O]S(=O)(=O)C(F)(F)F"        
+                     ],
+        "Rxn_Priority":3
+    },
+    {
+        "Name": "sp2-sp2 Suzuki Coupling",
+        "Reaction": ["[CX3;!$(CC#N);!$(C~[O,N,Cl,Br,I,F]);!R:1]!@[c:2]>>[C:1](B(O)(O)).[c:2](I)",
+                      "[CX3;!$(CC#N);!$(C~[O,N,Cl,Br,I,F]);!R:1]!@[c:2]>>[C:1](B(O)(O)).[c:2](Br)",
+                     "[CX3;!$(CC#N);!$(C~[O,N,Cl,Br,I,F]);!R:1]!@[c:2]>>[C:1](B(O)(O)).[c:2](Cl)",
+                     "[CX3;!$(CC#N);!$(C~[O,N,Cl,Br,I,F]);!R:1]!@[c:2]>>[C:1](I).[c:2](B(O)(O))",
+                     "[CX3;!$(CC#N);!$(C~[O,N,Cl,Br,I,F]);!R:1]!@[c:2]>>[C:1](Br).[c:2](B(O)(O))",
+                     "[CX3;!$(CC#N);!$(C~[O,N,Cl,Br,I,F]);!R:1]!@[c:2]>>[C:1](Cl).[c:2](B(O)(O))",
+                     "[CX3;!$(CC#N);!$(C~[O,N,Cl,Br,I,F]);!R:1]!@[c:2]>>[C:1][B](O1)OC(C)(C)C1(C)(C).[c:2](I)",
+                     "[CX3;!$(CC#N);!$(C~[O,N,Cl,Br,I,F]);!R:1]!@[c:2]>>[C:1][B](O1)OC(C)(C)C1(C)(C).[c:2](Br)",
+                     "[CX3;!$(CC#N);!$(C~[O,N,Cl,Br,I,F]);!R:1]!@[c:2]>>[C:1][B](O1)OC(C)(C)C1(C)(C).[c:2](Cl)",
+                     "[CX3;!$(CC#N);!$(C~[O,N,Cl,Br,I,F]);!R:1]!@[c:2]>>[C:1](I).[c:2][B](O1)OC(C)(C)C1(C)(C)",
+                     "[CX3;!$(CC#N);!$(C~[O,N,Cl,Br,I,F]);!R:1]!@[c:2]>>[C:1](Br).[c:2][B](O1)OC(C)(C)C1(C)(C)",
+                     "[CX3;!$(CC#N);!$(C~[O,N,Cl,Br,I,F]);!R:1]!@[c:2]>>[C:1](Cl).[c:2][B](O1)OC(C)(C)C1(C)(C)"
+                      ],
+        "Rxn_Priority":2
+        
+    },
+    
+    {
+        "Name": "Negishi Coupling",
+        "Reaction": ["[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1][Zn]I.[c:2](I)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1][Zn]I.[c:2](Br)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1][Zn]I.[c:2](Cl)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1][Zn]Br.[c:2](I)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1][Zn]Br.[c:2](Br)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1][Zn]Br.[c:2](Cl)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1][Zn]Cl.[c:2](I)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1][Zn]Cl.[c:2](Br)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1][Zn]Cl.[c:2](Cl)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1]I.[c:2](I)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1]I.[c:2](Br)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1]I.[c:2](Cl)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1]Br.[c:2](I)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1]Br.[c:2](Br)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1]Br.[c:2](Cl)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1]Cl.[c:2](I)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1]Cl.[c:2](Br)",
+                     "[C;!$(CC#N);!$(C~[#7,#8,Cl,F,Br,I]);!R:1]!@[c:2]>>[C:1]Cl.[c:2](Cl)"     
+            ],
+         "Rxn_Priority":3
+    },
+    
+    {
+        "Name": "CS Buchwald",
+        "Reaction": ["[c:1]!@[S:2][c,C:3]>> [c:1][I].[S:2][c,C:3]", 
+                     "[c:1]!@[S:2][c,C:3]>> [c:1][Br].[S:2][c,C:3]",
+                     "[c:1]!@[S:2][c,C:3]>> [c:1][Cl].[S:2][c,C:3]"
+                       ],
+        "Rxn_Priority":3
+        
+    },
+    {
+        "Name": "Thiol Alkylation",
+        "Reaction": ["[C:1]!@[S:2][c,C:3]>> [C:1][I].[S:2][c,C:3]",
+                     "[C:1]!@[S:2][c,C:3]>> [C:1][Br].[S:2][c,C:3]",
+                     "[C:1]!@[S:2][c,C:3]>> [C:1][Cl].[S:2][c,C:3]"              
+                     ],
+        "Rxn_Priority":3
+        
+    },
+    {
+        "Name": "Sulfonamide Synthesis",
+        "Reaction": ["[#6:1][S:2](=O)(=O)!@[N:3]([#6,#1:4]) >> [#6:1][S:2](=O)(=O)[Cl].[N:3]([#6,#1:4])[At]" 
+                       ],
+         "Rxn_Priority":3
+        
+    },
+    {
+        "Name": "Nav1_8",
+        "Reaction": ["O=C1C([c:1])([c:2])NC(N)=N1>>[c:1][Br].[c:2]C#C", 
+                "O=C1C([c:1])([c:2])NC(N)=N1>>[c:1]C(=O)[Cl].[c:2]C[P+](c1ccccc1)(c1ccccc1)c1ccccc1",
+                "O=C1C([c:1])([c:2])NC(N)=N1>>[c:1]C(=O)[Cl].[c:2]C[U+](c1ccccc1)(c1ccccc1)c1ccccc1"
+                       ],
+         "Rxn_Priority":3
+        
+    },
+    {
+        "Name": "Sulphonamide CN-aryl coupling",
+        "Reaction": ["[C:1][S:2](=O)(=O)[N:3]!@[c:4]>> [C:1][S:2](=O)(=O)[N:3][At].[I][c:4]" 
+                       ],
+         "Rxn_Priority":3
+        
+    },
+    {
+        "Name": "Amide CN-aryl coupling",
+        "Reaction": ["[C:1][C:2](=O)[N:3]!@[c:4]>> [C:1][C:2](=O)[N:3][At].[I][c:4]"] ,
+        "Rxn_Priority":3
+    },
+    {
+        "Name": "Amine Protection",
+        "Reactant": ["C(=O)(O)OC(C)(C)(C)",
+                    "C(=O)(O)OCc1ccccc1",
+                    "C(=O)(O)OCC1c2ccccc2c3ccccc31"],
+        "Reaction": ["[C:1](=[O:2])-[OD1].[N!H0!$(NC(=O))!$(N[At])!$([NH1;!R]):3]>>[C:1](=[O:2])[N:3]",
+                    "[C:1](=[O:2])-[OD1].[N!H0!$(NC(=O))!$(N[At])!$([NH1;!R]):3]>>[C:1](=[O:2])[N:3]",
+                    "[C:1](=[O:2])-[OD1].[N!H0!$(NC(=O))!$(N[At])!$([NH1;!R]):3]>>[C:1](=[O:2])[N:3]"],
+        "Protection Score": [1,2,3]
+    },
+    {
+        "Name": "Acid Protection",
+        "Reactant": ["CO",
+                     "OC(C)(C)C"
+                    ],
+        "Reaction": ["[OH1:3].[C:1](=[O:2])-[OD1]>>[C:1](=[O:2])[OD2:3]",
+                    "[OH1:3].[C:1](=[O:2])-[OD1]>>[C:1](=[O:2])[OD2:3]"],
+        "Protection Score": [1,2]
+    },
+    {
+        "Name": "Hydroxyl Protection",
+        "Reactant": ["[Si](C)(C)C(C)(C)C",
+                     "COCC[Si](C)(C)C",
+                     "C(=O)C",
+                     "C1CCCCO1",
+                     "C(=O)(O)OC(C)(C)(C)"
+                    ],
+        "Reaction": ["[Si:1]([C:2])[C:3].[OH1!$(OC(=O))!$(OBO):4]>>[Si:1]([C:2])([C:3])[OD2:4]",
+                     "[CD1:1][OD2:2][CD2:3].[OH1!$(OC(=O))!$(OBO):4]>>[C:1]([O:2][C:3])[OD2:4]",
+                     "[C:1](=[O:2])[C:3].[OH1!$(OC(=O))!$(OBO):4]>>[C:1](=[O:2])([C:3])[OD2:4]",
+                     "[O:3][C:1].[OH1!$(OC(=O))!$(OBO):2]>>[C:1]([O:3])[O:2]",
+                     "[C:1](=[O:2])-[OD1].[OH1!$(OC(=O))!$(OBO):3]>>[C:1](=[O:2])[OD2:3]"
+                     ],
+        "Protection Score": [1,2,3,4,5]
+    }
+]
+
+
+-------------- 
+
+Assignment4
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+%matplotlib notebook
+
+# Filter all warnings. If you would like to see the warnings, please comment the two lines below.
+import warnings
+warnings.filterwarnings('ignore')
+
+import re
+def clean_data(x):
+    x = x.replace('?','-')
+    x = x.replace(',','')
+    x = x.replace('%','')
+    find = re.findall("(Increase|Decrease|decrease|increase|Positive|Negative|Steady)([0-9,\.,\-]*)",x)
+    if(len(find)==1):
+        return float(find[0][1])
+    elif(len(find)==2):
+        return float(find[1][1])
+    elif(len(find)==0):        
+        return float(x)
+
+US = pd.read_csv('/GWD/appbase/projects/CCI/sp459402/testfile/Compare_ChemAxon_RDKIT/Economy/Copy of us_economy.csv')
+UK = pd.read_csv('/GWD/appbase/projects/CCI/sp459402/testfile/Compare_ChemAxon_RDKIT/Economy/uk_economy.csv')
+
+cols = UK.columns
+
+for y in cols:
+    if(y != 'Year'):
+        US[y]= US[y].apply(lambda x: clean_data(x))
+
+
+for y in cols:
+    if(y != 'Year'):
+        UK[y]= UK[y].apply(lambda x: clean_data(x))
+
+US = US[cols]
+UK = UK[cols]
+
+
+df['Year'] = df['Year'].apply(int)
+
+
+fig, ((ax1,ax2), (ax3,ax4)) = plt.subplots(2, 2)
+ax1.plot(df_means['GDP_growth_US_mean'], '-o', label= 'US')
+ax1.plot(df_means['GDP_growth_UK_mean'], '-o', label = 'UK')
+ax1.set_xticks(x_pos)
+ax1.set_xticklabels(years)
+ax1.set_ylabel('% GDP growth')
+ax1.legend()
+ax2.plot(df_means['Inflation_rate_US_mean'], '-o', label= 'US')
+ax2.plot(df_means['Inflation_rate_UK_mean'], '-o', label = 'UK')
+ax2.set_xticks(x_pos)
+ax2.set_xticklabels(years)
+ax2.set_ylabel('% Inflation')
+ax2.legend()
+ax3.plot(df_means['Unemployment_rate_US_mean'], '-o', label= 'US')
+ax3.plot(df_means['Unemployment_rate_UK_mean'], '-o', label = 'UK')
+ax3.set_xticks(x_pos)
+ax3.set_xticklabels(years)
+ax3.set_ylabel('% Unemployment')
+ax3.legend()
+ax4.plot(df_means['Government_debt_held_in_public_US_mean'], '-o', label= 'US')
+ax4.plot(df_means['Government_debt_held_in_public_UK_mean'], '-o', label = 'UK')
+ax4.set_xticks(x_pos)
+ax4.set_xticklabels(years)
+ax4.set_ylabel('% Gov_Debt_held_in_public ')
+ax4.legend()
+fig.set_size_inches(7, 7)
+fig.suptitle('Comparision of US and UK Economy over a period of 40 years from 1980')
+
+--------------
+
+
